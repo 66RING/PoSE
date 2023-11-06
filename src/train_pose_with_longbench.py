@@ -155,7 +155,8 @@ def train_preprocess_function_randomized(examples, tokenizer, scaled_max_positio
 
 def train_preprocess_function_pose(examples, tokenizer, scaled_max_position_embeddings, model_max_position_embeddings):
 
-    inputs = examples["text"]
+    inputs = examples["input"]
+    print(inputs[0])
     raw_model_inputs = tokenizer(inputs, padding=False, truncation=True, max_length=model_max_position_embeddings*5)
 
     input_ids = []
@@ -204,7 +205,7 @@ def train_preprocess_function_pi(examples, tokenizer, scaled_max_position_embedd
 
 def test_preprocess_function(examples, tokenizer, inference_length):
 
-    inputs = examples["text"]
+    inputs = examples["input"]
     model_inputs = tokenizer(inputs, padding=False, truncation=True, max_length=inference_length)
     position_ids = [torch.arange(len(ids), dtype=torch.long) for ids in model_inputs["input_ids"]]
     model_inputs["position_ids"] = position_ids
@@ -217,6 +218,7 @@ def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    print("loading config...")
     config = AutoConfig.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir)
     scaled_max_position_embeddings=int(training_args.model_max_position_embeddings * training_args.rope_scaling_factor)
     config.max_position_embeddings=scaled_max_position_embeddings
@@ -226,12 +228,14 @@ def train():
         if training_args.rope_scaling_type == "yarn":
             config.rope_scaling["original_max_position_embeddings"] = training_args.model_max_position_embeddings
         
+    print("loading model...")
     model = LlamaForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
         config=config,
     )
 
+    print("loading tokenizer...")
     tokenizer = transformers.LlamaTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -253,11 +257,16 @@ def train():
             }
         )
 
-    raw_train_datasets = load_dataset('json', data_files=data_args.train_data_path, split="train", cache_dir=training_args.cache_dir)
-    raw_valid_datasets = load_dataset('json', data_files=data_args.valid_data_path, split="train", cache_dir=training_args.cache_dir)
-    raw_test_datasets = load_dataset('json', data_files=data_args.test_data_path, split="train", cache_dir=training_args.cache_dir)
-    if training_args.local_rank > 0: 
-        torch.distributed.barrier()
+    print("loading dataset...")
+    # raw_train_datasets = load_dataset('json', data_files=data_args.train_data_path, split="train", cache_dir=training_args.cache_dir)
+    # raw_valid_datasets = load_dataset('json', data_files=data_args.valid_data_path, split="train", cache_dir=training_args.cache_dir)
+    # raw_test_datasets = load_dataset('json', data_files=data_args.test_data_path, split="train", cache_dir=training_args.cache_dir)
+    raw_train_datasets = load_dataset('csv', data_files=data_args.train_data_path, split="train[:80%]", cache_dir=training_args.cache_dir)
+    raw_valid_datasets = load_dataset('csv', data_files=data_args.valid_data_path, split="train[80%:90%]", cache_dir=training_args.cache_dir)
+    raw_test_datasets = load_dataset('csv', data_files=data_args.test_data_path, split="train[-10%:]", cache_dir=training_args.cache_dir)
+
+    # if training_args.local_rank > 0: 
+    #     torch.distributed.barrier()
 
     train_dataset = raw_train_datasets.map(
         train_preprocess_function_pose,
@@ -292,14 +301,15 @@ def train():
         desc="Running tokenizer on test dataset",
         fn_kwargs={"tokenizer": tokenizer, "inference_length": training_args.inference_length}
     )
+    print("preprocess done...")
 
-    if training_args.local_rank == 0:
-        torch.distributed.barrier()
+    # if training_args.local_rank == 0:
+    #     torch.distributed.barrier()
     
-    if training_args.local_rank == 0:
-        print(len(train_dataset))
-        for index in random.sample(range(len(train_dataset)), 3):
-            print(f"Sample {index} of the training set: {train_dataset[index]}.")
+    # if training_args.local_rank == 0:
+    #     print(len(train_dataset))
+    #     for index in random.sample(range(len(train_dataset)), 3):
+    #         print(f"Sample {index} of the training set: {train_dataset[index]}.")
     
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     # data_module = dict(eval_dataset=valid_dataset, data_collator=data_collator)
@@ -335,3 +345,4 @@ def train():
 
 if __name__ == "__main__":
     train()
+
